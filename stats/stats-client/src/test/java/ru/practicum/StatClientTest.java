@@ -4,10 +4,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.autoconfigure.web.client.RestClientTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.cloud.client.DefaultServiceInstance;
+import org.springframework.cloud.client.ServiceInstance;
+import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -18,10 +23,12 @@ import java.util.List;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.*;
 
-@RestClientTest(components = StatClient.class, properties = "client.url=http://localhost:9090")
+@RestClientTest(components = StatClient.class)
 @Import(RestConfig.class)
 class StatClientTest {
 
@@ -39,12 +46,32 @@ class StatClientTest {
     @Autowired
     private MockRestServiceServer mockServer;
 
-    private static final String BASE_URL = "http://localhost:9090";
+    @MockBean
+    private DiscoveryClient discoveryClient;
+
+    private static final String SERVICE_ID = "stats-server";
+    private static final String HOST = "localhost";
+    private static final int PORT = 9090;
+    private static final String BASE_URL = "http://" + HOST + ":" + PORT;
+
+    private void stubDiscovery() {
+        ServiceInstance instance = new DefaultServiceInstance(
+                SERVICE_ID + ":1",
+                SERVICE_ID,
+                HOST,
+                PORT,
+                false
+        );
+        when(discoveryClient.getInstances(anyString()))
+                .thenReturn(List.of(instance));
+    }
 
     @Test
     @SneakyThrows
     @DisplayName("Успешная отправка запроса на сервер.")
     void hit_shouldSendPostRequest() {
+        stubDiscovery();
+
         EndpointHit endpointHit = new EndpointHit(
                 1L,
                 "ewm-main",
@@ -67,6 +94,8 @@ class StatClientTest {
     @SneakyThrows
     @DisplayName("Успешный запрос статистики с сервера.")
     void getViewStats_shouldReturnStatsList() {
+        stubDiscovery();
+
         StatsRequest request = new StatsRequest(
                 "2020-05-05 00:00:00",
                 "2035-05-05 00:00:00",
@@ -74,14 +103,14 @@ class StatClientTest {
                 true
         );
 
-        List<ViewStats> expectedStats = List.of(new ViewStats("ewm-main","/events/1",5L));
+        List<ViewStats> expectedStats = List.of(new ViewStats("ewm-main", "/events/1", 5L));
 
         mockServer.expect(requestTo(startsWith(BASE_URL + "/stats")))
                 .andExpect(method(HttpMethod.GET))
                 .andExpect(queryParam("start", request.getStartTime().replace(" ", "%20")))
                 .andExpect(queryParam("end", request.getEndTime().replace(" ", "%20")))
-                .andExpect(queryParam("uris",request.getUris().getFirst()))
-                .andExpect(queryParam("unique","true"))
+                .andExpect(queryParam("uris", request.getUris().getFirst()))
+                .andExpect(queryParam("unique", "true"))
                 .andRespond(withSuccess(objectMapper.writeValueAsString(expectedStats), MediaType.APPLICATION_JSON));
 
         List<ViewStats> response = statClient.getViewStats(request);
@@ -96,6 +125,8 @@ class StatClientTest {
     @Test
     @DisplayName("Вернуть пустой список в случае срабатывания исключения.")
     void getViewStats_shouldReturnEmptyListWhenExceptionIsThrown() {
+        stubDiscovery();
+
         StatsRequest request = new StatsRequest(
                 "2020-05-05 00:00:00",
                 "2035-05-05 00:00:00",
