@@ -1,16 +1,10 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="MainApplication-test" type="Application" factoryName="Application">
-    <option name="MAIN_CLASS_NAME" value="ru.practicum.MainApplication" />
-    <module name="main-service" />
-    <option name="VM_PARAMETERS" value="-Dspring.profiles.active=test" />
-    <extension name="coverage">
-      <pattern>
-        <option name="PATTERN" value="ru.practicum.*" />
-        <option name="ENABLED" value="true" />
-      </pattern>
-    </extension>
-    <method v="2">
-      <option name="Make" enabled="true" />
-    </method>
-  </configuration>
+    <configuration default="false" name="MainApplication-test" type="Application" factoryName="Application">
+        <option name="MAIN_CLASS_NAME" value="ru.practicum.MainApplication"/>
+        <module name="main-service"/>
+        <option name="VM_PARAMETERS" value="-Dspring.profiles.active=test"/>
+        <method v="2">
+            <option name="Make" enabled="true"/>
+        </method>
+    </configuration>
 </component>

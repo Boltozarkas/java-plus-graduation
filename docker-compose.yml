@@ -1,15 +1,66 @@
 services:
-  ewm-db:
+  users-db:
     image: postgres:16.1
-    container_name: ewm-db
+    container_name: users-db
     ports:
-      - "7542:5432"
+      - "7543:5432"
     environment:
-      POSTGRES_DB: ewm-main
-      POSTGRES_USER: main
-      POSTGRES_PASSWORD: main
+      POSTGRES_DB: ewm-users
+      POSTGRES_USER: users
+      POSTGRES_PASSWORD: users
     volumes:
-      - ewm-db-data:/var/lib/postgresql/data
+      - users-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  events-db:
+    image: postgres:16.1
+    container_name: events-db
+    ports:
+      - "7544:5432"
+    environment:
+      POSTGRES_DB: ewm-events
+      POSTGRES_USER: events
+      POSTGRES_PASSWORD: events
+    volumes:
+      - events-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  requests-db:
+    image: postgres:16.1
+    container_name: requests-db
+    ports:
+      - "7545:5432"
+    environment:
+      POSTGRES_DB: ewm-requests
+      POSTGRES_USER: requests
+      POSTGRES_PASSWORD: requests
+    volumes:
+      - requests-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  comments-db:
+    image: postgres:16.1
+    container_name: comments-db
+    ports:
+      - "7546:5432"
+    environment:
+      POSTGRES_DB: ewm-comments
+      POSTGRES_USER: comments
+      POSTGRES_PASSWORD: comments
+    volumes:
+      - comments-db-data:/var/lib/postgresql/data
     healthcheck:
       test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
       interval: 5s
@@ -34,5 +85,8 @@ services:
       retries: 10
 
 volumes:
-  ewm-db-data:
+  users-db-data:
+  events-db-data:
+  requests-db-data:
+  comments-db-data:
   stats-db-data:
