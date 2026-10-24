@@ -6,6 +6,8 @@ import ru.practicum.dto.user.UserFullDto;
 import ru.practicum.dto.user.UserShortDto;
 import ru.practicum.exception.ServiceUnavailableException;
 
+import java.util.List;
+
 @Component
 public class UserClientFallbackFactory implements FallbackFactory<UserClient> {
 
@@ -51,6 +53,16 @@ public class UserClientFallbackFactory implements FallbackFactory<UserClient> {
             @Override
             public UserFullDto decrementCommentsCount(Long id) {
                 throw new ServiceUnavailableException("User service is unavailable", cause);
+            }
+
+            @Override
+            public List<UserShortDto> findByIds(List<Long> ids) {
+                if (ids == null || ids.isEmpty()) {
+                    return List.of();
+                }
+                return ids.stream()
+                        .map(id -> new UserShortDto(id, null))
+                        .toList();
             }
         };
     }

@@ -134,6 +134,14 @@ public class UserServiceImpl implements UserService {
         return UserMapper.toUserFullDto(user);
     }
 
+    @Override
+    public List<User> findByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return userRepository.findAllByIdIn(ids);
+    }
+
     private void updateRank(User user) {
         int count = user.getCommentsCount();
 

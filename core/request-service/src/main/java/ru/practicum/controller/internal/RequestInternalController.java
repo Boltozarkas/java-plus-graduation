@@ -38,6 +38,6 @@ public class RequestInternalController {
     public EventRequestStatusUpdateResult updateRequestsStatus(
             @PathVariable Long eventId,
             @RequestBody EventRequestStatusUpdateRequest request) {
-        return requestService.updateRequestsStatus(eventId, request.getRequestIds(), request.getStatus());
+        return requestService.updateRequestsStatus(eventId, request);
     }
 }

@@ -2,9 +2,11 @@ package ru.practicum.entity.comment;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.dto.comment.CommentDto;
 import ru.practicum.dto.comment.NewCommentDto;
 import ru.practicum.dto.comment.UpdateCommentDto;
@@ -12,6 +14,7 @@ import ru.practicum.dto.comment.UserCommentAdminDto;
 import ru.practicum.dto.event.EventFullDto;
 import ru.practicum.dto.user.UserFullDto;
 import ru.practicum.dto.user.UserShortDto;
+import ru.practicum.event.CommentCountUpdateEvent;
 import ru.practicum.exception.ConflictException;
 import ru.practicum.exception.NotFoundException;
 import ru.practicum.feign.event.EventClient;
@@ -19,10 +22,12 @@ import ru.practicum.feign.user.UserClient;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.function.Function;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 @Service
-@Transactional(readOnly = true)
+//@Transactional(readOnly = true)
 @Slf4j
 @RequiredArgsConstructor
 public class CommentServiceImpl implements CommentService {
@@ -30,25 +35,32 @@ public class CommentServiceImpl implements CommentService {
     private final CommentRepository commentRepository;
     private final UserClient userClient;
     private final EventClient eventClient;
+    private final TransactionTemplate transactionTemplate; // Внедряем TransactionTemplate
+    private final ApplicationEventPublisher eventPublisher; // Для асинхронных счетчиков
 
     @Override
-    @Transactional
     public CommentDto createComment(NewCommentDto newCommentDto, Long userId) {
         UserFullDto fullUser = userClient.findFullById(userId);
         if (fullUser.isBanned()) {
             throw new ConflictException("You have been banned!");
         }
 
-        UserShortDto user = userClient.findById(userId);
+        UserShortDto user = new UserShortDto(fullUser.getId(), fullUser.getName());
         EventFullDto event = eventClient.findById(newCommentDto.getEventId());
 
         if (!"PUBLISHED".equals(event.getState())) {
             throw new ConflictException("Cannot comment on unpublished event.");
         }
 
-        Comment comment = commentRepository.save(
-                CommentMapper.toComment(newCommentDto, user.getId(), event.getId()));
-        userClient.incrementCommentsCount(userId);
+        // Сохраняем в транзакции
+        Comment comment = transactionTemplate.execute(status -> {
+            Comment newComment = CommentMapper.toComment(newCommentDto, user.getId(), event.getId());
+            return commentRepository.save(newComment);
+        });
+
+        // Событие для асинхронного обновления счетчика
+        eventPublisher.publishEvent(new CommentCountUpdateEvent(this, userId, true));
+
         CommentDto commentDto = CommentMapper.toCommentDto(comment, user);
         log.info("Новый комментарий на событие: {}", CommentMapper.toLogComment(commentDto));
         return commentDto;
@@ -70,38 +82,44 @@ public class CommentServiceImpl implements CommentService {
     }
 
     @Override
-    @Transactional
     public void deleteComment(Long commentId, Long userId) {
         Comment comment = getById(commentId);
         checkAuthor(comment, userId);
 
         Long authorId = comment.getAuthorId();
-        commentRepository.delete(comment);
-        userClient.decrementCommentsCount(authorId);
+
+        // Удаляем в транзакции
+        transactionTemplate.execute(status -> {
+            commentRepository.delete(comment);
+            return null;
+        });
+
+        // Событие для асинхронного обновления счетчика
+        eventPublisher.publishEvent(new CommentCountUpdateEvent(this, authorId, false));
 
         log.info("Комментарий id: {} удален пользователем id: {}", commentId, userId);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<CommentDto> getComments(Long userId) {
-        userClient.findById(userId);
-        return mapWithAuthors(commentRepository.findAllByAuthorId(userId));
+        userClient.findById(userId); // проверка существования
+        List<Comment> comments = commentRepository.findAllByAuthorId(userId);
+        return mapWithAuthors(comments);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<CommentDto> getEventComments(Long eventId) {
-        eventClient.existsById(eventId);
-        return mapWithAuthors(commentRepository.findAllByEventId(eventId));
+        if (!eventClient.existsById(eventId)) {
+            throw new NotFoundException("Event with id " + eventId + " not found");
+        }
+        List<Comment> comments = commentRepository.findAllByEventId(eventId);
+        return mapWithAuthors(comments);
     }
 
     @Override
-    public CommentDto getComment(Long commentId) {
-        Comment comment = getById(commentId);
-        UserShortDto user = userClient.findById(comment.getAuthorId());
-        return CommentMapper.toCommentDto(comment, user);
-    }
-
-    @Override
+    @Transactional(readOnly = true)
     public List<CommentDto> searchComments(String text, Pageable pageable) {
         List<Comment> comments = commentRepository.findAllByTextContainsIgnoreCase(text, pageable);
         if (comments.isEmpty()) {
@@ -111,38 +129,59 @@ public class CommentServiceImpl implements CommentService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public CommentDto getComment(Long commentId) {
+        Comment comment = getById(commentId);
+        UserShortDto user = userClient.findById(comment.getAuthorId());
+        return CommentMapper.toCommentDto(comment, user);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Comment getById(Long id) {
         return commentRepository.findById(id).orElseThrow(
                 () -> new NotFoundException("Comment not found with id: " + id));
     }
 
     @Override
-    @Transactional
     public void adminDelete(Long commentId) {
         Comment comment = getById(commentId);
         CommentDto dto = CommentMapper.toCommentDto(comment, null);
         Long authorId = comment.getAuthorId();
-        commentRepository.delete(comment);
-        userClient.decrementCommentsCount(authorId);
+
+        // Удаляем в транзакции
+        transactionTemplate.execute(status -> {
+            commentRepository.delete(comment);
+            return null;
+        });
+
+        // Событие для асинхронного обновления счетчика
+        eventPublisher.publishEvent(new CommentCountUpdateEvent(this, authorId, false));
+
         log.info("Комментарий удален администратором: {}", CommentMapper.toLogComment(dto));
     }
 
     @Override
-    @Transactional
     public UserCommentAdminDto giveWarning(Long commentId) {
+        // 1. Проверки — вне транзакции (read-only)
         Comment comment = getById(commentId);
-
         if (comment.isAdminWarning()) {
             throw new ConflictException(
                     String.format("Comment with id %d already received a warning", commentId));
         }
 
-        comment.setAdminWarning(true);
+        // 2. Обновляем флаг и сохраняем в отдельной транзакции
+        transactionTemplate.execute(status -> {
+            comment.setAdminWarning(true);
+            return commentRepository.save(comment);
+        });
 
+        // 3. СИНХРОННО вызываем user-service (вне транзакции), чтобы получить актуальные данные
         UserFullDto author = userClient.giveWarning(comment.getAuthorId());
 
         log.info("Комментарий id: {} получил предупреждение. Автор: {}", commentId, author);
 
+        // 4. Возвращаем DTO с актуальными данными
         return UserCommentAdminDto.builder()
                 .authorId(author.getId())
                 .authorName(author.getName())
@@ -151,9 +190,28 @@ public class CommentServiceImpl implements CommentService {
                 .build();
     }
 
+    /**
+     * Собираем уникальные ID авторов и получаем их одним запросом (устраняем N+1).
+     */
     private List<CommentDto> mapWithAuthors(List<Comment> comments) {
-        Function<Long, UserShortDto> authorResolver = userClient::findById;
-        return CommentMapper.toCommentDto(comments, authorResolver);
+        if (comments.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<Long> authorIds = comments.stream()
+                .map(Comment::getAuthorId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+
+        if (authorIds.isEmpty()) {
+            return CommentMapper.toCommentDto(comments, Collections.emptyMap());
+        }
+
+        Map<Long, UserShortDto> authorsMap = userClient.findByIds(authorIds).stream()
+                .collect(Collectors.toMap(UserShortDto::getId, u -> u));
+
+        return CommentMapper.toCommentDto(comments, authorsMap);
     }
 
     private void checkAuthor(Comment comment, Long userId) {

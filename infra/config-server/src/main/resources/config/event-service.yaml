@@ -15,8 +15,8 @@ spring:
   datasource:
     driver-class-name: org.postgresql.Driver
     url: jdbc:postgresql://localhost:7544/ewm-events
-    username: events
-    password: events
+    username: ${SPRING_DATASOURCE_USERNAME:events}
+    password: ${SPRING_DATASOURCE_PASSWORD:events}
   cloud:
     openfeign:
       circuitbreaker:

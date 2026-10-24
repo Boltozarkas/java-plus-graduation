@@ -10,7 +10,13 @@ spring:
           search-locations: classpath:/config
 
 server:
-  port: 0
+  port: ${SERVER_PORT:8888}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
 
 eureka:
   client:

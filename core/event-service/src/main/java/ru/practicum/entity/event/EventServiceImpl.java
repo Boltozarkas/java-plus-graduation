@@ -10,6 +10,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.EndpointHit;
 import ru.practicum.StatClient;
 import ru.practicum.StatsRequest;
@@ -32,6 +33,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static java.util.Optional.ofNullable;
 
@@ -47,6 +49,7 @@ public class EventServiceImpl implements EventService {
     private final UserClient userClient;
     private final RequestClient requestClient;
     private final RequestStatusClient requestStatusClient;
+    private final TransactionTemplate transactionTemplate;
 
     private static final String APP_NAME = "ewm-main-service";
     private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -59,14 +62,16 @@ public class EventServiceImpl implements EventService {
         CategoryDto categoryDto = categoryService.findById(dto.getCategory());
         Category category = CategoryMapper.toEntity(categoryDto);
 
-        Event event = EventMapper.mapToEntity(dto, category, userId);
-        event = eventRepository.save(event);
+        // Сохраняем в транзакции
+        Event event = transactionTemplate.execute(status -> {
+            Event newEvent = EventMapper.mapToEntity(dto, category, userId);
+            return eventRepository.save(newEvent);
+        });
 
+        // Feign-вызовы для DTO — ВНЕ транзакции
         UserShortDto initiator = buildInitiator(event.getInitiatorId());
-
         var result = EventMapper.toEventFullDto(event, initiator, 0L, 0L);
         log.info("Новое событие: {}", EventMapper.toLogEvent(result));
-
         return result;
     }
 
@@ -96,11 +101,13 @@ public class EventServiceImpl implements EventService {
 
         Map<Long, Long> viewsMap = getViewsMap(events);
         Map<Long, Long> confirmedMap = getConfirmedMap(events);
+        Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
 
         return events.stream()
                 .map(event -> EventMapper.toEventShortDto(
                         event,
-                        buildInitiator(event.getInitiatorId()),
+                        initiatorsMap.getOrDefault(event.getInitiatorId(),
+                                new UserShortDto(event.getInitiatorId(), null)),
                         confirmedMap.getOrDefault(event.getId(), 0L),
                         viewsMap.getOrDefault(event.getId(), 0L)))
                 .toList();
@@ -114,15 +121,19 @@ public class EventServiceImpl implements EventService {
         checkUserIsEventInitiator(userId, event);
         checkEventUpdateConditions(event, request);
 
-        updateEventFromUserRequest(request, event);
+        // Обновляем и сохраняем в транзакции
+        Event updatedEvent = transactionTemplate.execute(status -> {
+            updateEventFromUserRequest(request, event);
+            return eventRepository.save(event);
+        });
 
-        Long views = getViewsMap(Collections.singletonList(event)).getOrDefault(event.getId(), 0L);
-        UserShortDto initiator = buildInitiator(event.getInitiatorId());
-        Long confirmed = requestClient.getConfirmedCount(event.getId());
+        // Feign-вызовы для DTO — ВНЕ транзакции
+        Long views = getViewsMap(Collections.singletonList(updatedEvent)).getOrDefault(updatedEvent.getId(), 0L);
+        UserShortDto initiator = buildInitiator(updatedEvent.getInitiatorId());
+        Long confirmed = requestClient.getConfirmedCount(updatedEvent.getId());
 
-        EventFullDto eventFullDto = EventMapper.toEventFullDto(event, initiator, confirmed, views);
+        EventFullDto eventFullDto = EventMapper.toEventFullDto(updatedEvent, initiator, confirmed, views);
         log.info("Событие обновлено создателем: {}", EventMapper.toLogEvent(eventFullDto));
-
         return eventFullDto;
     }
 
@@ -140,6 +151,7 @@ public class EventServiceImpl implements EventService {
         Long userId = eventParamDto.getUserId();
         Event event = getEvent(eventParamDto.getEventId());
         checkUserIsEventInitiator(userId, event);
+
         return requestStatusClient.updateRequestsStatus(eventParamDto.getEventId(), request);
     }
 
@@ -160,11 +172,13 @@ public class EventServiceImpl implements EventService {
 
         Map<Long, Long> viewsMap = getViewsMap(events);
         Map<Long, Long> confirmedMap = getConfirmedMap(events);
+        Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
 
         return events.stream()
                 .map(event -> EventMapper.toEventFullDto(
                         event,
-                        buildInitiator(event.getInitiatorId()),
+                        initiatorsMap.getOrDefault(event.getInitiatorId(),
+                                new UserShortDto(event.getInitiatorId(), null)),
                         confirmedMap.getOrDefault(event.getId(), 0L),
                         viewsMap.getOrDefault(event.getId(), 0L)))
                 .toList();
@@ -175,16 +189,20 @@ public class EventServiceImpl implements EventService {
     public EventFullDto updateEventByAdmin(Long eventId, UpdateEventAdminRequest request) {
         Event event = getEvent(eventId);
 
-        updateEventFromAdminRequest(request, event);
-        applyStateAction(event, request.getStateAction());
+        // Обновляем в транзакции
+        Event updatedEvent = transactionTemplate.execute(status -> {
+            updateEventFromAdminRequest(request, event);
+            applyStateAction(event, request.getStateAction());
+            return eventRepository.save(event);
+        });
 
-        Long views = getViewsMap(Collections.singletonList(event)).getOrDefault(event.getId(), 0L);
-        UserShortDto initiator = buildInitiator(event.getInitiatorId());
+        // Feign-вызовы для DTO — ВНЕ транзакции
+        Long views = getViewsMap(Collections.singletonList(updatedEvent)).getOrDefault(updatedEvent.getId(), 0L);
+        UserShortDto initiator = buildInitiator(updatedEvent.getInitiatorId());
         Long confirmed = requestClient.getConfirmedCount(eventId);
 
-        var result = EventMapper.toEventFullDto(event, initiator, confirmed, views);
+        var result = EventMapper.toEventFullDto(updatedEvent, initiator, confirmed, views);
         log.info("Событие обновлено админом: {}", EventMapper.toLogEvent(result));
-
         return result;
     }
 
@@ -195,39 +213,68 @@ public class EventServiceImpl implements EventService {
         validateDateRange(params.getRangeStart(), params.getRangeEnd());
 
         LocalDateTime rangeStart = params.getRangeStart() != null ? params.getRangeStart() : LocalDateTime.now();
-        Pageable pageable = buildPageable(params.getSort(), params.getFrom(), params.getSize());
         Predicate predicate = buildPublicPredicate(params, rangeStart);
 
+        sendHit(request);
+
+        // ВАРИАНТ 1: Сортировка по просмотрам
+        if (SortBy.VIEWS == params.getSort()) {
+            // 1. Достаем ВСЕ события, подходящие под фильтр (без пагинации)
+            List<Event> allEvents;
+            if (predicate == null) {
+                allEvents = eventRepository.findAll();
+            } else {
+                Iterable<Event> iterable = eventRepository.findAll(predicate);
+                allEvents = StreamSupport.stream(iterable.spliterator(), false).toList();
+            }
+
+            // 2. Батч-запрос статистики и подтвержденных заявок
+            Map<Long, Long> viewsMap = getViewsMap(allEvents);
+            Map<Long, Long> confirmedMap = getConfirmedMap(allEvents);
+            Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(allEvents);
+
+            // 3. Маппим в DTO и сортируем по просмотрам (по убыванию)
+            List<EventShortDto> sortedEvents = allEvents.stream()
+                    .map(event -> EventMapper.toEventShortDto(
+                            event,
+                            initiatorsMap.getOrDefault(event.getInitiatorId(), new UserShortDto(event.getInitiatorId(), null)),
+                            confirmedMap.getOrDefault(event.getId(), 0L),
+                            viewsMap.getOrDefault(event.getId(), 0L)))
+                    .sorted(Comparator.comparing(EventShortDto::getViews).reversed())
+                    .toList();
+
+            // 4. Применяем пагинацию к уже отсортированному списку
+            int from = params.getFrom();
+            int size = params.getSize();
+            if (from >= sortedEvents.size()) {
+                return Collections.emptyList();
+            }
+            int to = Math.min(from + size, sortedEvents.size());
+            return sortedEvents.subList(from, to);
+        }
+
+        // ВАРИАНТ 2: Сортировка по дате (или без сортировки)
+        // Здесь мы можем использовать пагинацию на уровне БД, так как eventDate есть в events-db
+        Pageable pageable = buildPageable(params.getSort(), params.getFrom(), params.getSize());
         List<Event> events = predicate == null ?
                 eventRepository.findAll(pageable).getContent() :
                 eventRepository.findAll(predicate, pageable).getContent();
 
         if (events.isEmpty()) {
-            sendHit(request);
             return Collections.emptyList();
         }
 
-        sendHit(request);
-
         Map<Long, Long> viewsMap = getViewsMap(events);
         Map<Long, Long> confirmedMap = getConfirmedMap(events);
+        Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
 
-        List<EventShortDto> result = new ArrayList<>();
-        for (Event event : events) {
-            Long views = viewsMap.getOrDefault(event.getId(), 0L);
-            Long confirmed = confirmedMap.getOrDefault(event.getId(), 0L);
-            result.add(EventMapper.toEventShortDto(
-                    event,
-                    buildInitiator(event.getInitiatorId()),
-                    confirmed,
-                    views));
-        }
-
-        if (SortBy.VIEWS == params.getSort()) {
-            result.sort(Comparator.comparing(EventShortDto::getViews).reversed());
-        }
-
-        return result;
+        return events.stream()
+                .map(event -> EventMapper.toEventShortDto(
+                        event,
+                        initiatorsMap.getOrDefault(event.getInitiatorId(), new UserShortDto(event.getInitiatorId(), null)),
+                        confirmedMap.getOrDefault(event.getId(), 0L),
+                        viewsMap.getOrDefault(event.getId(), 0L)))
+                .toList();
     }
 
     @Override
@@ -305,6 +352,26 @@ public class EventServiceImpl implements EventService {
         List<Long> ids = events.stream().map(Event::getId).toList();
         return requestClient.getConfirmedCounts(ids).stream()
                 .collect(Collectors.toMap(EventRequestsCountDto::eventId, EventRequestsCountDto::count));
+    }
+
+    /**
+     * Батч-запрос инициаторов для набора событий.
+     * Один вызов userClient.findByIds(...) вместо N вызовов userClient.findById(...).
+     */
+    private Map<Long, UserShortDto> getInitiatorsMap(List<Event> events) {
+        if (events.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<Long> initiatorIds = events.stream()
+                .map(Event::getInitiatorId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (initiatorIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return userClient.findByIds(initiatorIds).stream()
+                .collect(Collectors.toMap(UserShortDto::getId, u -> u));
     }
 
     private UserShortDto buildInitiator(Long initiatorId) {

@@ -13,10 +13,10 @@ spring:
     init:
       mode: always
   datasource:
-    driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://localhost:7545/ewm-requests
-    username: requests
-    password: requests
+  driver-class-name: org.postgresql.Driver
+  url: jdbc:postgresql://localhost:7545/ewm-requests
+  username: ${SPRING_DATASOURCE_USERNAME:requests}
+  password: ${SPRING_DATASOURCE_PASSWORD:requests}
   cloud:
     openfeign:
       circuitbreaker:

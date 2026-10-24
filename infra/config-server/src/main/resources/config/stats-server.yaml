@@ -13,10 +13,10 @@ spring:
     init:
       mode: always
   datasource:
-    driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://localhost:6542/ewm-stats
-    username: stat
-    password: stat
+  driver-class-name: org.postgresql.Driver
+  url: jdbc:postgresql://localhost:6542/ewm-stats
+  username: ${SPRING_DATASOURCE_USERNAME:stat}
+  password: ${SPRING_DATASOURCE_PASSWORD:stat}
 
 eureka:
   client:

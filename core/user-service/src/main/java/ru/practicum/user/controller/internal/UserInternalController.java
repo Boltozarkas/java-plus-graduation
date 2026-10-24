@@ -9,6 +9,8 @@ import ru.practicum.entity.user.UserMapper;
 import ru.practicum.entity.user.UserRepository;
 import ru.practicum.entity.user.UserService;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/internal/users")
 @RequiredArgsConstructor
@@ -19,8 +21,7 @@ public class UserInternalController {
 
     @GetMapping("/{id}")
     public UserShortDto findById(@PathVariable Long id) {
-        User user = userRepository.findById(id).orElseThrow(
-                () -> new ru.practicum.exception.NotFoundException("User with id " + id + " not found"));
+        User user = userService.findById(id);
         return UserMapper.toShortDto(user);
     }
 
@@ -48,5 +49,12 @@ public class UserInternalController {
     @PostMapping("/{id}/comments-count/decrement")
     public UserFullDto decrementCommentsCount(@PathVariable Long id) {
         return userService.decrementCommentsCount(id);
+    }
+
+    @GetMapping("/batch")
+    public List<UserShortDto> findByIds(@RequestParam("ids") List<Long> ids) {
+        return userService.findByIds(ids).stream()
+                .map(UserMapper::toShortDto)
+                .toList();
     }
 }

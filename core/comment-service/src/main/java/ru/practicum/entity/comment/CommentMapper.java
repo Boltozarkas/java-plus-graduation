@@ -8,7 +8,7 @@ import ru.practicum.dto.user.UserShortDto;
 
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.function.Function;
+import java.util.Map;
 
 @UtilityClass
 public class CommentMapper {
@@ -36,9 +36,9 @@ public class CommentMapper {
     }
 
     public static List<CommentDto> toCommentDto(List<Comment> comments,
-                                                Function<Long, UserShortDto> authorResolver) {
+                                                Map<Long, UserShortDto> authorsMap) {
         return comments.stream()
-                .map(c -> toCommentDto(c, authorResolver.apply(c.getAuthorId())))
+                .map(c -> toCommentDto(c, authorsMap.get(c.getAuthorId())))
                 .toList();
     }
 

@@ -28,4 +28,6 @@ public interface UserService {
     UserFullDto incrementCommentsCount(Long userId);
 
     UserFullDto decrementCommentsCount(Long userId);
+
+    List<User> findByIds(List<Long> ids); // <-- добавили
 }

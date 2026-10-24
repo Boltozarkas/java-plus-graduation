@@ -15,8 +15,8 @@ spring:
   datasource:
     driver-class-name: org.postgresql.Driver
     url: jdbc:postgresql://localhost:7543/ewm-users
-    username: users
-    password: users
+    username: ${SPRING_DATASOURCE_USERNAME:users}
+    password: ${SPRING_DATASOURCE_PASSWORD:users}
 
 eureka:
   client:

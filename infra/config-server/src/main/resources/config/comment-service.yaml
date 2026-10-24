@@ -13,10 +13,10 @@ spring:
     init:
       mode: always
   datasource:
-    driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://localhost:7546/ewm-comments
-    username: comments
-    password: comments
+  driver-class-name: org.postgresql.Driver
+  url: jdbc:postgresql://localhost:7546/ewm-comments
+  username: ${SPRING_DATASOURCE_USERNAME:comments}
+  password: ${SPRING_DATASOURCE_PASSWORD:comments}
   cloud:
     openfeign:
       circuitbreaker:
