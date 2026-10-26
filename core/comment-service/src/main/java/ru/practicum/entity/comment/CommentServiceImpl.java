@@ -27,16 +27,16 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
-//@Transactional(readOnly = true)
 @Slf4j
 @RequiredArgsConstructor
+// @Transactional(readOnly = true) с класса убран
 public class CommentServiceImpl implements CommentService {
 
     private final CommentRepository commentRepository;
     private final UserClient userClient;
     private final EventClient eventClient;
-    private final TransactionTemplate transactionTemplate; // Внедряем TransactionTemplate
-    private final ApplicationEventPublisher eventPublisher; // Для асинхронных счетчиков
+    private final TransactionTemplate transactionTemplate;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public CommentDto createComment(NewCommentDto newCommentDto, Long userId) {
@@ -52,14 +52,14 @@ public class CommentServiceImpl implements CommentService {
             throw new ConflictException("Cannot comment on unpublished event.");
         }
 
-        // Сохраняем в транзакции
+        // Сохраняем в транзакции и публикуем событие ВНУТРИ транзакции
         Comment comment = transactionTemplate.execute(status -> {
             Comment newComment = CommentMapper.toComment(newCommentDto, user.getId(), event.getId());
-            return commentRepository.save(newComment);
+            Comment saved = commentRepository.save(newComment);
+            // Публикуем событие до коммита, AFTER_COMMIT сработает после успешного сохранения
+            eventPublisher.publishEvent(new CommentCountUpdateEvent(this, userId, true));
+            return saved;
         });
-
-        // Событие для асинхронного обновления счетчика
-        eventPublisher.publishEvent(new CommentCountUpdateEvent(this, userId, true));
 
         CommentDto commentDto = CommentMapper.toCommentDto(comment, user);
         log.info("Новый комментарий на событие: {}", CommentMapper.toLogComment(commentDto));
@@ -88,14 +88,11 @@ public class CommentServiceImpl implements CommentService {
 
         Long authorId = comment.getAuthorId();
 
-        // Удаляем в транзакции
         transactionTemplate.execute(status -> {
             commentRepository.delete(comment);
+            eventPublisher.publishEvent(new CommentCountUpdateEvent(this, authorId, false));
             return null;
         });
-
-        // Событие для асинхронного обновления счетчика
-        eventPublisher.publishEvent(new CommentCountUpdateEvent(this, authorId, false));
 
         log.info("Комментарий id: {} удален пользователем id: {}", commentId, userId);
     }
@@ -103,7 +100,7 @@ public class CommentServiceImpl implements CommentService {
     @Override
     @Transactional(readOnly = true)
     public List<CommentDto> getComments(Long userId) {
-        userClient.findById(userId); // проверка существования
+        userClient.findById(userId);
         List<Comment> comments = commentRepository.findAllByAuthorId(userId);
         return mapWithAuthors(comments);
     }
@@ -149,39 +146,31 @@ public class CommentServiceImpl implements CommentService {
         CommentDto dto = CommentMapper.toCommentDto(comment, null);
         Long authorId = comment.getAuthorId();
 
-        // Удаляем в транзакции
         transactionTemplate.execute(status -> {
             commentRepository.delete(comment);
+            eventPublisher.publishEvent(new CommentCountUpdateEvent(this, authorId, false));
             return null;
         });
-
-        // Событие для асинхронного обновления счетчика
-        eventPublisher.publishEvent(new CommentCountUpdateEvent(this, authorId, false));
 
         log.info("Комментарий удален администратором: {}", CommentMapper.toLogComment(dto));
     }
 
     @Override
     public UserCommentAdminDto giveWarning(Long commentId) {
-        // 1. Проверки — вне транзакции (read-only)
         Comment comment = getById(commentId);
         if (comment.isAdminWarning()) {
             throw new ConflictException(
                     String.format("Comment with id %d already received a warning", commentId));
         }
 
-        // 2. Обновляем флаг и сохраняем в отдельной транзакции
         transactionTemplate.execute(status -> {
             comment.setAdminWarning(true);
             return commentRepository.save(comment);
         });
 
-        // 3. СИНХРОННО вызываем user-service (вне транзакции), чтобы получить актуальные данные
         UserFullDto author = userClient.giveWarning(comment.getAuthorId());
-
         log.info("Комментарий id: {} получил предупреждение. Автор: {}", commentId, author);
 
-        // 4. Возвращаем DTO с актуальными данными
         return UserCommentAdminDto.builder()
                 .authorId(author.getId())
                 .authorName(author.getName())
@@ -190,9 +179,6 @@ public class CommentServiceImpl implements CommentService {
                 .build();
     }
 
-    /**
-     * Собираем уникальные ID авторов и получаем их одним запросом (устраняем N+1).
-     */
     private List<CommentDto> mapWithAuthors(List<Comment> comments) {
         if (comments.isEmpty()) {
             return Collections.emptyList();

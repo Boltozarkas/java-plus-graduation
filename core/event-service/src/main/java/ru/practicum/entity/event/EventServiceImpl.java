@@ -40,7 +40,7 @@ import static java.util.Optional.ofNullable;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
+// @Transactional(readOnly = true) с класса убран — read-only ставим точечно на read-методы
 public class EventServiceImpl implements EventService {
 
     private final StatClient statClient;
@@ -57,12 +57,11 @@ public class EventServiceImpl implements EventService {
     // ---------- Private ----------
 
     @Override
-    @Transactional
     public EventFullDto create(Long userId, NewEventDto dto) {
         CategoryDto categoryDto = categoryService.findById(dto.getCategory());
         Category category = CategoryMapper.toEntity(categoryDto);
 
-        // Сохраняем в транзакции
+        // Сохранение в транзакции (transactionTemplate, readOnly=false)
         Event event = transactionTemplate.execute(status -> {
             Event newEvent = EventMapper.mapToEntity(dto, category, userId);
             return eventRepository.save(newEvent);
@@ -76,6 +75,7 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public EventFullDto getById(Long userId, Long eventId) {
         Event event = getEvent(eventId);
         UserShortDto initiator = buildInitiator(event.getInitiatorId());
@@ -87,11 +87,13 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<Event> getByIds(Collection<Long> ids) {
-        return eventRepository.findAllById(ids);
+        return eventRepository.findAllByIdInWithCategory(ids);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<EventShortDto> getUserEvents(Long userId, Pageable pageable) {
         List<Event> events = eventRepository.findAllByInitiatorId(userId, pageable);
 
@@ -114,20 +116,17 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
-    @Transactional
     public EventFullDto updateEventByCreatorId(EventParamDto eventParamDto, UpdateEventUserRequest request) {
         Long userId = eventParamDto.getUserId();
-        Event event = getEvent(eventParamDto.getEventId());
-        checkUserIsEventInitiator(userId, event);
-        checkEventUpdateConditions(event, request);
 
-        // Обновляем и сохраняем в транзакции
         Event updatedEvent = transactionTemplate.execute(status -> {
+            Event event = getEvent(eventParamDto.getEventId());
+            checkUserIsEventInitiator(userId, event);
+            checkEventUpdateConditions(event, request);
             updateEventFromUserRequest(request, event);
             return eventRepository.save(event);
         });
 
-        // Feign-вызовы для DTO — ВНЕ транзакции
         Long views = getViewsMap(Collections.singletonList(updatedEvent)).getOrDefault(updatedEvent.getId(), 0L);
         UserShortDto initiator = buildInitiator(updatedEvent.getInitiatorId());
         Long confirmed = requestClient.getConfirmedCount(updatedEvent.getId());
@@ -138,6 +137,7 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<ParticipationRequestDto> getEventRequestsByCreatorId(Long userId, Long eventId) {
         Event event = getEvent(eventId);
         checkUserIsEventInitiator(userId, event);
@@ -158,6 +158,7 @@ public class EventServiceImpl implements EventService {
     // ---------- Admin ----------
 
     @Override
+    @Transactional(readOnly = true)
     public List<EventFullDto> getEventsByAdmin(EventAdminParamDto params) {
         Pageable pageable = PageRequest.of(params.getFrom() / params.getSize(), params.getSize());
         Predicate predicate = buildAdminPredicate(params);
@@ -185,18 +186,14 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
-    @Transactional
     public EventFullDto updateEventByAdmin(Long eventId, UpdateEventAdminRequest request) {
-        Event event = getEvent(eventId);
-
-        // Обновляем в транзакции
         Event updatedEvent = transactionTemplate.execute(status -> {
+            Event event = getEvent(eventId);
             updateEventFromAdminRequest(request, event);
             applyStateAction(event, request.getStateAction());
             return eventRepository.save(event);
         });
 
-        // Feign-вызовы для DTO — ВНЕ транзакции
         Long views = getViewsMap(Collections.singletonList(updatedEvent)).getOrDefault(updatedEvent.getId(), 0L);
         UserShortDto initiator = buildInitiator(updatedEvent.getInitiatorId());
         Long confirmed = requestClient.getConfirmedCount(eventId);
@@ -217,67 +214,50 @@ public class EventServiceImpl implements EventService {
 
         sendHit(request);
 
-        // ВАРИАНТ 1: Сортировка по просмотрам
-        if (SortBy.VIEWS == params.getSort()) {
-            // 1. Достаем ВСЕ события, подходящие под фильтр (без пагинации)
-            List<Event> allEvents;
-            if (predicate == null) {
-                allEvents = eventRepository.findAll();
-            } else {
-                Iterable<Event> iterable = eventRepository.findAll(predicate);
-                allEvents = StreamSupport.stream(iterable.spliterator(), false).toList();
-            }
+        Sort sort = resolveSort(params.getSort());
+        int from = params.getFrom();
+        int size = params.getSize();
 
-            // 2. Батч-запрос статистики и подтвержденных заявок
-            Map<Long, Long> viewsMap = getViewsMap(allEvents);
-            Map<Long, Long> confirmedMap = getConfirmedMap(allEvents);
-            Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(allEvents);
-
-            // 3. Маппим в DTO и сортируем по просмотрам (по убыванию)
-            List<EventShortDto> sortedEvents = allEvents.stream()
-                    .map(event -> EventMapper.toEventShortDto(
-                            event,
-                            initiatorsMap.getOrDefault(event.getInitiatorId(), new UserShortDto(event.getInitiatorId(), null)),
-                            confirmedMap.getOrDefault(event.getId(), 0L),
-                            viewsMap.getOrDefault(event.getId(), 0L)))
-                    .sorted(Comparator.comparing(EventShortDto::getViews).reversed())
-                    .toList();
-
-            // 4. Применяем пагинацию к уже отсортированному списку
-            int from = params.getFrom();
-            int size = params.getSize();
-            if (from >= sortedEvents.size()) {
-                return Collections.emptyList();
-            }
-            int to = Math.min(from + size, sortedEvents.size());
-            return sortedEvents.subList(from, to);
-        }
-
-        // ВАРИАНТ 2: Сортировка по дате (или без сортировки)
-        // Здесь мы можем использовать пагинацию на уровне БД, так как eventDate есть в events-db
-        Pageable pageable = buildPageable(params.getSort(), params.getFrom(), params.getSize());
-        List<Event> events = predicate == null ?
-                eventRepository.findAll(pageable).getContent() :
-                eventRepository.findAll(predicate, pageable).getContent();
-
-        if (events.isEmpty()) {
+        List<Long> pageIds = eventRepository.findPageIds(predicate, sort, from, size);
+        if (pageIds.isEmpty()) {
             return Collections.emptyList();
         }
 
-        Map<Long, Long> viewsMap = getViewsMap(events);
-        Map<Long, Long> confirmedMap = getConfirmedMap(events);
-        Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
+        List<Event> events = eventRepository.findAllByIdInWithCategory(pageIds);
+        Map<Long, Event> eventById = events.stream()
+                .collect(Collectors.toMap(Event::getId, e -> e));
 
-        return events.stream()
-                .map(event -> EventMapper.toEventShortDto(
-                        event,
-                        initiatorsMap.getOrDefault(event.getInitiatorId(), new UserShortDto(event.getInitiatorId(), null)),
-                        confirmedMap.getOrDefault(event.getId(), 0L),
-                        viewsMap.getOrDefault(event.getId(), 0L)))
+        List<Event> ordered = pageIds.stream()
+                .map(eventById::get)
+                .filter(Objects::nonNull)
+                .toList();
+
+        Map<Long, Long> viewsMap = getViewsMap(ordered);
+        Map<Long, Long> confirmedMap = getConfirmedMap(ordered);
+        Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(ordered);
+
+        return ordered.stream()
+                .map(e -> EventMapper.toEventShortDto(
+                        e,
+                        initiatorsMap.getOrDefault(e.getInitiatorId(),
+                                new UserShortDto(e.getInitiatorId(), null)),
+                        confirmedMap.getOrDefault(e.getId(), 0L),
+                        viewsMap.getOrDefault(e.getId(), 0L)))
                 .toList();
     }
 
+    private Sort resolveSort(SortBy sortBy) {
+        if (sortBy == SortBy.VIEWS) {
+            return Sort.by(Sort.Order.desc("views"), Sort.Order.asc("id"));
+        }
+        if (sortBy == SortBy.EVENT_DATE) {
+            return Sort.by(Sort.Order.asc("eventDate"));
+        }
+        return Sort.unsorted();
+    }
+
     @Override
+    @Transactional(readOnly = true)
     public EventFullDto getPublishedEventById(Long id, HttpServletRequest request) {
         Event event = findEventByIdAndState(id, EventState.PUBLISHED);
 
@@ -291,6 +271,7 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Map<Long, Long> getEventsRequests(List<Event> events) {
         if (events.isEmpty()) {
             return Collections.emptyMap();
@@ -302,6 +283,7 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Map<Long, Long> getViewsMap(List<Event> events) {
         if (events.isEmpty()) {
             return Collections.emptyMap();
@@ -329,22 +311,20 @@ public class EventServiceImpl implements EventService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Event findEventByIdAndState(Long id, EventState state) {
         return eventRepository.findByIdAndState(id, state)
                 .orElseThrow(() -> new NotFoundException("Event with id=" + id + " was not found"));
     }
 
     @Override
+    @Transactional(readOnly = true)
     public boolean isEventExists(Long eventId) {
         return eventRepository.existsById(eventId);
     }
 
     // ---------- Helpers ----------
 
-    /**
-     * Батч-запрос подтверждённых заявок для набора событий.
-     * Один вызов requestClient.getConfirmedCounts(...) вместо N вызовов getConfirmedCount(...).
-     */
     private Map<Long, Long> getConfirmedMap(List<Event> events) {
         if (events.isEmpty()) {
             return Collections.emptyMap();
@@ -354,10 +334,6 @@ public class EventServiceImpl implements EventService {
                 .collect(Collectors.toMap(EventRequestsCountDto::eventId, EventRequestsCountDto::count));
     }
 
-    /**
-     * Батч-запрос инициаторов для набора событий.
-     * Один вызов userClient.findByIds(...) вместо N вызовов userClient.findById(...).
-     */
     private Map<Long, UserShortDto> getInitiatorsMap(List<Event> events) {
         if (events.isEmpty()) {
             return Collections.emptyMap();

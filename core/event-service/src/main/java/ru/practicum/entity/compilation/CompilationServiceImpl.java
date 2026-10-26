@@ -6,7 +6,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.dto.compilation.CompilationDto;
 import ru.practicum.dto.compilation.CompilationsParamDto;
@@ -25,7 +24,7 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
+// @Transactional(readOnly = true) с класса убран — read-only ставим точечно на read-методы
 public class CompilationServiceImpl implements CompilationService {
 
     private final CompilationRepository compilationRepository;
@@ -34,6 +33,7 @@ public class CompilationServiceImpl implements CompilationService {
     private final TransactionTemplate transactionTemplate;
 
     @Override
+    @Transactional(readOnly = true)
     public List<CompilationDto> getAll(CompilationsParamDto dto) {
         int pageNumber = dto.getFrom() / dto.getSize();
         PageRequest pageRequest = PageRequest.of(pageNumber, dto.getSize());
@@ -64,6 +64,7 @@ public class CompilationServiceImpl implements CompilationService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public CompilationDto getById(Long compId) {
         Compilation compilation = getByIdWithEvents(compId);
         List<Event> events = compilation.getEvents().stream().toList();
@@ -75,21 +76,20 @@ public class CompilationServiceImpl implements CompilationService {
     }
 
     @Override
-    @Transactional
     public CompilationDto create(NewCompilationDto dto) {
         if (compilationRepository.existsByTitle(dto.getTitle())) {
             throw new ConflictException("Compilation with title " + dto.getTitle() + " already exists");
         }
 
+        // events теперь с инициализированной category (@EntityGraph в EventRepository)
         List<Event> events = eventService.getByIds(dto.getEvents());
 
-        // Сохраняем в транзакции
         Compilation entity = transactionTemplate.execute(status -> {
             Compilation compilation = CompilationMapper.toEntity(dto, new HashSet<>(events));
             return compilationRepository.save(compilation);
         });
 
-        // Обогащение DTO (Feign) — ВНЕ транзакции
+        // Feign-вызовы — ВНЕ транзакции
         Map<Long, Long> hitsMap = eventService.getViewsMap(events);
         Map<Long, Long> eventsIdRequestsCount = eventService.getEventsRequests(events);
         Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
@@ -111,19 +111,18 @@ public class CompilationServiceImpl implements CompilationService {
     }
 
     @Override
-    @Transactional
     public CompilationDto update(Long compId, UpdateCompilationRequest request) {
-        Compilation compilation = getByIdWithEvents(compId);
-
-        // Обновляем в транзакции
+        // Всё (загрузка + updateFields + save) — в одной транзакции.
+        // findWithEventsById с @EntityGraph({"events", "events.category"}) → events и category инициализированы.
         Compilation updatedEntity = transactionTemplate.execute(status -> {
+            Compilation compilation = getByIdWithEvents(compId);
             updateFields(compilation, request);
             return compilationRepository.save(compilation);
         });
 
         List<Event> events = updatedEntity.getEvents().stream().toList();
 
-        // Обогащение DTO (Feign) — ВНЕ транзакции
+        // Feign-вызовы — ВНЕ транзакции
         Map<Long, Long> hitsMap = eventService.getViewsMap(events);
         Map<Long, Long> eventsIdRequestsCount = eventService.getEventsRequests(events);
         Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
@@ -160,6 +159,7 @@ public class CompilationServiceImpl implements CompilationService {
                 .collect(Collectors.toUnmodifiableSet());
 
         if (request.getEvents() != null && !oldIds.equals(request.getEvents())) {
+            // getByIds возвращает events с инициализированной category
             List<Event> newEvents = eventService.getByIds(request.getEvents());
             old.setEvents(new HashSet<>(newEvents));
         }

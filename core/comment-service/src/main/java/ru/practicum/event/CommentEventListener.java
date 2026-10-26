@@ -14,7 +14,7 @@ public class CommentEventListener {
 
     private final UserClient userClient;
 
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleCommentCountUpdate(CommentCountUpdateEvent event) {
         try {
             if (event.isIncrement()) {
@@ -27,16 +27,6 @@ public class CommentEventListener {
         } catch (Exception e) {
             log.error("Ошибка обновления счетчика комментариев для пользователя {}. " +
                     "Требуется повторная обработка.", event.getUserId(), e);
-        }
-    }
-
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void handleCommentWarning(CommentWarningEvent event) {
-        try {
-            userClient.giveWarning(event.getAuthorId());
-            log.info("Предупреждение выдано пользователю {}", event.getAuthorId());
-        } catch (Exception e) {
-            log.error("Ошибка выдачи предупреждения пользователю {}", event.getAuthorId(), e);
         }
     }
 }

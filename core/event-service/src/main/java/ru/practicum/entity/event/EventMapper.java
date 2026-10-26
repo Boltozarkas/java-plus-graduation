@@ -45,6 +45,7 @@ public class EventMapper {
         entity.setPaid(eventDto.getPaid());
         entity.setState(EventState.PENDING);
         entity.setRequestModeration(eventDto.getRequestModeration());
+        entity.setViews(0L);
 
         return entity;
     }
