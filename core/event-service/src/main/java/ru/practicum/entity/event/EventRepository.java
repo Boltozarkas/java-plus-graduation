@@ -2,7 +2,6 @@ package ru.practicum.entity.event;
 
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.querydsl.QuerydslPredicateExecutor;
 import org.springframework.data.repository.query.Param;
@@ -32,8 +31,4 @@ public interface EventRepository extends JpaRepository<Event, Long>,
 
     @Query("select e.id from Event e")
     List<Long> findAllIds();
-
-    @Modifying
-    @Query("update Event e set e.views = :views where e.id = :id")
-    void updateViews(@Param("id") Long id, @Param("views") long views);
 }

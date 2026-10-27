@@ -4,13 +4,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.StatClient;
 import ru.practicum.StatsRequest;
 import ru.practicum.ViewStats;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -27,7 +30,7 @@ public class ViewsSyncService {
 
     private final EventRepository eventRepository;
     private final StatClient statClient;
-    private final TransactionTemplate transactionTemplate;
+    private final JdbcTemplate jdbcTemplate;
 
     @EventListener(ApplicationReadyEvent.class)
     public void onStartup() {
@@ -54,12 +57,21 @@ public class ViewsSyncService {
 
             for (int i = 0; i < allIds.size(); i += BATCH_SIZE) {
                 List<Long> batch = allIds.subList(i, Math.min(i + BATCH_SIZE, allIds.size()));
-                transactionTemplate.executeWithoutResult(status -> {
-                    for (Long id : batch) {
-                        long views = statsByEventId.getOrDefault(id, 0L);
-                        eventRepository.updateViews(id, views);
-                    }
-                });
+                jdbcTemplate.batchUpdate(
+                        "UPDATE events SET views = ? WHERE id = ?",
+                        new BatchPreparedStatementSetter() {
+                            @Override
+                            public void setValues(PreparedStatement ps, int idx) throws SQLException {
+                                Long id = batch.get(idx);
+                                ps.setLong(1, statsByEventId.getOrDefault(id, 0L));
+                                ps.setLong(2, id);
+                            }
+
+                            @Override
+                            public int getBatchSize() {
+                                return batch.size();
+                            }
+                        });
             }
             log.info("Синхронизация views завершена: обработано {} событий", allIds.size());
         } catch (Exception e) {
