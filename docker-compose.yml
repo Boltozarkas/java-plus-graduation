@@ -1,20 +1,80 @@
 services:
-  ewm-db:
+  # ==================== БАЗЫ ДАННЫХ ====================
+  users-db:
     image: postgres:16.1
-    container_name: ewm-db
+    container_name: users-db
     ports:
-      - "7542:5432"
+      - "7543:5432"
     environment:
-      POSTGRES_DB: ewm-main
-      POSTGRES_USER: main
-      POSTGRES_PASSWORD: main
+      POSTGRES_DB: ewm-users
+      POSTGRES_USER: users
+      POSTGRES_PASSWORD: users
     volumes:
-      - ewm-db-data:/var/lib/postgresql/data
+      - users-db-data:/var/lib/postgresql/data
     healthcheck:
       test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - ewm-network
+
+  events-db:
+    image: postgres:16.1
+    container_name: events-db
+    ports:
+      - "7544:5432"
+    environment:
+      POSTGRES_DB: ewm-events
+      POSTGRES_USER: events
+      POSTGRES_PASSWORD: events
+    volumes:
+      - events-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ewm-network
+
+  requests-db:
+    image: postgres:16.1
+    container_name: requests-db
+    ports:
+      - "7545:5432"
+    environment:
+      POSTGRES_DB: ewm-requests
+      POSTGRES_USER: requests
+      POSTGRES_PASSWORD: requests
+    volumes:
+      - requests-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ewm-network
+
+  comments-db:
+    image: postgres:16.1
+    container_name: comments-db
+    ports:
+      - "7546:5432"
+    environment:
+      POSTGRES_DB: ewm-comments
+      POSTGRES_USER: comments
+      POSTGRES_PASSWORD: comments
+    volumes:
+      - comments-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ewm-network
 
   stats-db:
     image: postgres:16.1
@@ -32,7 +92,181 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - ewm-network
+
+  # ==================== ИНФРАСТРУКТУРА ====================
+  discovery-server:
+    build:
+      context: ./infra/discovery-server
+      dockerfile: Dockerfile
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8761/actuator/health || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - ewm-network
+
+  config-server:
+    build:
+      context: ./infra/config-server
+      dockerfile: Dockerfile
+    container_name: config-server
+    environment:
+      - SERVER_PORT=8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_PROFILES_ACTIVE=native
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8888/actuator/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ewm-network
+
+  gateway-server:
+    build:
+      context: ./infra/gateway-server
+      dockerfile: Dockerfile
+    container_name: gateway-server
+    restart: on-failure
+    ports:
+      - "8080:8080"
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+    depends_on:
+      discovery-server:
+        condition: service_started
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
+  # ==================== МИКРОСЕРВИСЫ ====================
+  stats-server:
+    build:
+      context: ./stats/stats-server
+      dockerfile: Dockerfile
+    container_name: stats-server
+    restart: on-failure
+    ports:
+      - "9090:9090"
+    environment:
+      - SERVER_PORT=9090  # Фиксируем порт для тестов Postman
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://stats-db:5432/ewm-stats
+      - SPRING_DATASOURCE_USERNAME=stat
+      - SPRING_DATASOURCE_PASSWORD=stat
+    depends_on:
+      stats-db:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
+  user-service:
+    build:
+      context: ./core/user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://users-db:5432/ewm-users
+      - SPRING_DATASOURCE_USERNAME=users
+      - SPRING_DATASOURCE_PASSWORD=users
+    depends_on:
+      users-db:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
+  event-service:
+    build:
+      context: ./core/event-service
+      dockerfile: Dockerfile
+    container_name: event-service
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://events-db:5432/ewm-events
+      - SPRING_DATASOURCE_USERNAME=events
+      - SPRING_DATASOURCE_PASSWORD=events
+    depends_on:
+      events-db:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      request-service:
+        condition: service_started
+    networks:
+      - ewm-network
+
+  request-service:
+    build:
+      context: ./core/request-service
+      dockerfile: Dockerfile
+    container_name: request-service
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://requests-db:5432/ewm-requests
+      - SPRING_DATASOURCE_USERNAME=requests
+      - SPRING_DATASOURCE_PASSWORD=requests
+    depends_on:
+      requests-db:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
+  comment-service:
+    build:
+      context: ./core/comment-service
+      dockerfile: Dockerfile
+    container_name: comment-service
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://comments-db:5432/ewm-comments
+      - SPRING_DATASOURCE_USERNAME=comments
+      - SPRING_DATASOURCE_PASSWORD=comments
+    depends_on:
+      comments-db:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
 
 volumes:
-  ewm-db-data:
+  users-db-data:
+  events-db-data:
+  requests-db-data:
+  comments-db-data:
   stats-db-data:
+
+networks:
+  ewm-network:
+    driver: bridge

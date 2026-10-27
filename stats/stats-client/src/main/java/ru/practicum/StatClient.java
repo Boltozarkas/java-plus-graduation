@@ -10,7 +10,6 @@ import org.springframework.retry.policy.MaxAttemptsRetryPolicy;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
@@ -53,7 +52,9 @@ public class StatClient {
                     .body(endpointHit)
                     .retrieve()
                     .toBodilessEntity();
-        } catch (RestClientException e) {
+        } catch (Exception e) {
+            // Ловим всё: RestClientException, RuntimeException из makeUri,
+            // NoSuchElementException при пустом getInstances — hit не должен ломать бизнес-логику.
             log.error("Stats service unavailable: {}", e.getMessage(), e);
         }
     }
@@ -73,7 +74,7 @@ public class StatClient {
                     .retrieve()
                     .body(new ParameterizedTypeReference<List<ViewStats>>() {
                     });
-        } catch (RestClientException e) {
+        } catch (Exception e) {
             log.error("Stats service unavailable: {}", e.getMessage(), e);
             return Collections.emptyList();
         }
@@ -85,15 +86,11 @@ public class StatClient {
     }
 
     private ServiceInstance getInstance() {
-        try {
-            return discoveryClient
-                    .getInstances(statsServiceId)
-                    .getFirst();
-        } catch (Exception exception) {
+        List<ServiceInstance> instances = discoveryClient.getInstances(statsServiceId);
+        if (instances == null || instances.isEmpty()) {
             throw new RuntimeException(
-                    "Ошибка обнаружения адреса сервиса статистики с id: " + statsServiceId,
-                    exception
-            );
+                    "Сервис статистики с id: " + statsServiceId + " не зарегистрирован в Eureka");
         }
+        return instances.getFirst();
     }
 }

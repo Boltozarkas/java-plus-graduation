@@ -12,7 +12,11 @@
     <artifactId>core</artifactId>
 
     <modules>
-        <module>main-service</module>
+        <module>interaction</module>
+        <module>user-service</module>
+        <module>event-service</module>
+        <module>request-service</module>
+        <module>comment-service</module>
     </modules>
 
     <packaging>pom</packaging>
