@@ -8,9 +8,6 @@ import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import ru.practicum.StatClient;
-import ru.practicum.StatsRequest;
-import ru.practicum.ViewStats;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -18,7 +15,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -29,7 +25,7 @@ public class ViewsSyncService {
     private static final int BATCH_SIZE = 500;
 
     private final EventRepository eventRepository;
-    private final StatClient statClient;
+    //    private final StatClient statClient;
     private final JdbcTemplate jdbcTemplate;
 
     @EventListener(ApplicationReadyEvent.class)
@@ -87,21 +83,22 @@ public class ViewsSyncService {
         LocalDateTime start = LocalDateTime.now().minusYears(5);
         LocalDateTime end = LocalDateTime.now().plusYears(1);
 
-        List<ViewStats> stats = statClient.getViewStats(new StatsRequest(
-                start.format(FORMATTER),
-                end.format(FORMATTER),
-                uris,
-                true));
-
-        if (stats == null || stats.isEmpty()) {
-            log.warn("Stats вернул пустой ответ — пропускаем синхронизацию views");
-            return Map.of();
-        }
-
-        return stats.stream()
-                .collect(Collectors.toMap(
-                        vs -> Long.parseLong(vs.getUri().substring("/events/".length())),
-                        ViewStats::getHits,
-                        (a, b) -> a));
+//        List<ViewStats> stats = statClient.getViewStats(new StatsRequest(
+//                start.format(FORMATTER),
+//                end.format(FORMATTER),
+//                uris,
+//                true));
+//
+//        if (stats == null || stats.isEmpty()) {
+//            log.warn("Stats вернул пустой ответ — пропускаем синхронизацию views");
+//            return Map.of();
+//        }
+//
+//        return stats.stream()
+//                .collect(Collectors.toMap(
+//                        vs -> Long.parseLong(vs.getUri().substring("/events/".length())),
+//                        ViewStats::getHits,
+//                        (a, b) -> a));
+        return Map.of();
     }
 }
