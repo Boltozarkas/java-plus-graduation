@@ -2,8 +2,6 @@ package ru.practicum.feign.request;
 
 import org.springframework.cloud.openfeign.FallbackFactory;
 import org.springframework.stereotype.Component;
-import ru.practicum.dto.event.EventRequestStatusUpdateRequest;
-import ru.practicum.dto.event.EventRequestStatusUpdateResult;
 import ru.practicum.dto.event.EventRequestsCountDto;
 import ru.practicum.dto.request.ParticipationRequestDto;
 
@@ -29,6 +27,11 @@ public class RequestClientFallbackFactory implements FallbackFactory<RequestClie
             @Override
             public List<ParticipationRequestDto> getParticipationRequestsByEventId(Long eventId) {
                 return Collections.emptyList();
+            }
+
+            @Override
+            public Boolean isUserConfirmed(Long userId, Long eventId) {
+                return false;
             }
         };
     }

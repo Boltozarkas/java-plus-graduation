@@ -3,11 +3,7 @@ package ru.practicum.feign.request;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
-import ru.practicum.dto.event.EventRequestStatusUpdateRequest;
-import ru.practicum.dto.event.EventRequestStatusUpdateResult;
 import ru.practicum.dto.event.EventRequestsCountDto;
 import ru.practicum.dto.request.ParticipationRequestDto;
 
@@ -28,4 +24,7 @@ public interface RequestClient {
 
     @GetMapping("/internal/requests/events/{eventId}")
     List<ParticipationRequestDto> getParticipationRequestsByEventId(@PathVariable("eventId") Long eventId);
+
+    @GetMapping("/internal/requests/users/{userId}/events/{eventId}/confirmed")
+    Boolean isUserConfirmed(@PathVariable("userId") Long userId, @PathVariable("eventId") Long eventId);
 }

@@ -4,8 +4,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import ru.practicum.dto.user.UserShortDto;
 import ru.practicum.dto.category.CategoryDto;
+import ru.practicum.dto.user.UserShortDto;
 
 @Data
 @NoArgsConstructor
@@ -21,4 +21,5 @@ public class EventShortDto {
     private Boolean paid;
     private String title;
     private Long views;
+    private double rating;
 }

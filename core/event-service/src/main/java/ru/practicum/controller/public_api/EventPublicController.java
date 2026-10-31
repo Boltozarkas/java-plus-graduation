@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import ru.practicum.dto.event.EventFullDto;
@@ -29,7 +30,21 @@ public class EventPublicController {
 
     @GetMapping("/{id}")
     public EventFullDto getEventById(@PathVariable @Positive Long id,
+                                     @RequestHeader(value = "X-EWM-USER-ID", required = false) Long userId,
                                      HttpServletRequest request) {
-        return eventService.getPublishedEventById(id, request);
+        return eventService.getPublishedEventById(id, request, userId);
+    }
+
+    @GetMapping("/recommendations")
+    public List<EventShortDto> getRecommendations(@RequestHeader("X-EWM-USER-ID") Long userId,
+                                                  @RequestParam(defaultValue = "10") int maxResults) {
+        return eventService.getRecommendations(userId, maxResults);
+    }
+
+    @PutMapping("/{eventId}/like")
+    @ResponseStatus(HttpStatus.OK)
+    public void likeEvent(@PathVariable Long eventId,
+                          @RequestHeader("X-EWM-USER-ID") Long userId) {
+        eventService.likeEvent(userId, eventId);
     }
 }

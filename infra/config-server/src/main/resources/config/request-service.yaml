@@ -29,3 +29,11 @@ eureka:
   instance:
     instance-id: ${spring.application.name}:${random.value}
     prefer-ip-address: true
+
+grpc:
+  client:
+    collector:
+      address: 'discovery:///collector'
+      enableKeepAlive: true
+      keepAliveWithoutCalls: true
+      negotiationType: plaintext
