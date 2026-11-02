@@ -4,80 +4,63 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.specific.SpecificRecordBase;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.errors.WakeupException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
-import ru.practicum.analyzer.model.UserAction;
-import ru.practicum.analyzer.repository.UserActionRepository;
 import ru.practicum.ewm.stats.avro.UserActionAvro;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.List;
 
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class UserActionProcessor implements Runnable {
-    private final KafkaConsumer<String, SpecificRecordBase> userActionConsumer;
-    private final UserActionRepository repository;
+    private final KafkaConsumer<Long, SpecificRecordBase> userActionConsumer;
+    private final UserActionService userActionService;
 
     @Value("${kafka.topics.user-actions}")
     private String topic;
+
+    private volatile boolean running = true;
 
     @Override
     public void run() {
         try {
             userActionConsumer.subscribe(List.of(topic));
-            while (true) {
+            while (running) {
                 var records = userActionConsumer.poll(Duration.ofMillis(1000));
+                if (records.isEmpty()) {
+                    continue;
+                }
+                // Обрабатываем всю пачку; если хоть одна запись упадёт — не коммитим offset
                 for (var record : records) {
                     UserActionAvro avro = (UserActionAvro) record.value();
-                    processAction(avro);
+                    userActionService.save(avro); // ← публичный @Transactional через прокси
                 }
+                // Только после успешной обработки всех записей пачки
                 userActionConsumer.commitSync();
             }
+        } catch (WakeupException e) {
+            if (running) {
+                log.error("Unexpected WakeupException in UserActionProcessor", e);
+                throw e;
+            }
+            log.info("UserActionProcessor stopped via wakeup()");
         } catch (Exception e) {
             log.error("Error in UserActionProcessor", e);
-        }
-    }
-
-    @Transactional
-    protected void processAction(UserActionAvro avro) {
-        double newWeight = getWeight(avro);
-        LocalDateTime newTimestamp = LocalDateTime.ofInstant(avro.getTimestamp(), ZoneOffset.UTC);
-
-        var existing = repository.findByUserIdAndEventId(avro.getUserId(), avro.getEventId());
-
-        if (existing.isPresent()) {
-            UserAction action = existing.get();
-            // Обновляем только если новый вес больше
-            if (newWeight > action.getWeight()) {
-                action.setWeight(newWeight);
-                action.setActionType(avro.getActionType().name());
-                action.setTimestamp(newTimestamp);
-                repository.save(action);
-                log.info("Updated action: user {}, event {}, weight {}", avro.getUserId(), avro.getEventId(), newWeight);
+        } finally {
+            try {
+                userActionConsumer.close();
+                log.info("UserActionConsumer closed");
+            } catch (Exception e) {
+                log.error("Error closing userActionConsumer", e);
             }
-        } else {
-            UserAction entity = UserAction.builder()
-                    .userId(avro.getUserId())
-                    .eventId(avro.getEventId())
-                    .weight(newWeight)
-                    .actionType(avro.getActionType().name())
-                    .timestamp(newTimestamp)
-                    .build();
-            repository.save(entity);
-            log.info("Saved new action: user {}, event {}", avro.getUserId(), avro.getEventId());
         }
     }
 
-    private double getWeight(UserActionAvro avro) {
-        return switch (avro.getActionType()) {
-            case VIEW -> 0.4;
-            case REGISTER -> 0.8;
-            case LIKE -> 1.0;
-        };
+    public void shutdown() {
+        running = false;
+        userActionConsumer.wakeup();
     }
 }
