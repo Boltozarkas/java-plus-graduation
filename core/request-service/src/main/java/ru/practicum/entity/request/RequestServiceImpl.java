@@ -11,6 +11,7 @@ import ru.practicum.dto.event.EventRequestStatusUpdateResult;
 import ru.practicum.dto.event.EventRequestsCountDto;
 import ru.practicum.dto.request.ParticipationRequestDto;
 import ru.practicum.dto.user.UserShortDto;
+import ru.practicum.ewm.client.CollectorClient;
 import ru.practicum.exception.ConflictException;
 import ru.practicum.exception.NotFoundException;
 import ru.practicum.feign.event.EventClient;
@@ -30,6 +31,7 @@ public class RequestServiceImpl implements RequestService {
     private final UserClient userClient;
     private final EventClient eventClient;
     private final TransactionTemplate transactionTemplate;
+    private final CollectorClient collectorClient;
 
     @Override
     public ParticipationRequestDto saveRequest(Long userId, Long eventId) {
@@ -52,10 +54,22 @@ public class RequestServiceImpl implements RequestService {
             return requestRepository.save(request);
         });
 
+        // Отправляем информацию о регистрации в Collector
+        try {
+            collectorClient.sendRegister(userId, eventId);
+        } catch (Exception e) {
+            log.error("Failed to send register action to collector", e);
+        }
+
         var requestDto = RequestMapper.toRequestDto(savedRequest);
         log.info("Новая заявка на событие: {}", requestDto);
-
         return requestDto;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Boolean isUserConfirmed(Long userId, Long eventId) {
+        return requestRepository.existsByRequesterIdAndEventIdAndStatus(userId, eventId, RequestStatus.CONFIRMED);
     }
 
     @Override

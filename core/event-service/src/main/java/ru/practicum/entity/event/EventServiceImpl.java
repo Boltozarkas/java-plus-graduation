@@ -11,10 +11,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
-import ru.practicum.EndpointHit;
-import ru.practicum.StatClient;
-import ru.practicum.StatsRequest;
-import ru.practicum.ViewStats;
 import ru.practicum.dto.category.CategoryDto;
 import ru.practicum.dto.event.*;
 import ru.practicum.dto.request.ParticipationRequestDto;
@@ -22,6 +18,8 @@ import ru.practicum.dto.user.UserShortDto;
 import ru.practicum.entity.category.Category;
 import ru.practicum.entity.category.CategoryMapper;
 import ru.practicum.entity.category.CategoryService;
+import ru.practicum.ewm.client.AnalyzerClient;
+import ru.practicum.ewm.client.CollectorClient;
 import ru.practicum.exception.ConflictException;
 import ru.practicum.exception.NotFoundException;
 import ru.practicum.exception.ValidationException;
@@ -33,7 +31,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 import static java.util.Optional.ofNullable;
 
@@ -43,13 +40,15 @@ import static java.util.Optional.ofNullable;
 // @Transactional(readOnly = true) с класса убран — read-only ставим точечно на read-методы
 public class EventServiceImpl implements EventService {
 
-    private final StatClient statClient;
+    //    private final StatClient statClient;
     private final EventRepository eventRepository;
     private final CategoryService categoryService;
     private final UserClient userClient;
     private final RequestClient requestClient;
     private final RequestStatusClient requestStatusClient;
     private final TransactionTemplate transactionTemplate;
+    private final CollectorClient collectorClient;
+    private final AnalyzerClient analyzerClient;
 
     private static final String APP_NAME = "ewm-main-service";
     private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -212,7 +211,7 @@ public class EventServiceImpl implements EventService {
         LocalDateTime rangeStart = params.getRangeStart() != null ? params.getRangeStart() : LocalDateTime.now();
         Predicate predicate = buildPublicPredicate(params, rangeStart);
 
-        sendHit(request);
+//        sendHit(request);
 
         Sort sort = resolveSort(params.getSort());
         int from = params.getFrom();
@@ -236,13 +235,20 @@ public class EventServiceImpl implements EventService {
         Map<Long, Long> confirmedMap = getConfirmedMap(ordered);
         Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(ordered);
 
+        List<Long> eventIds = ordered.stream().map(Event::getId).toList();
+        Map<Long, Double> ratingsMap = analyzerClient.getRatings(eventIds);
+
         return ordered.stream()
-                .map(e -> EventMapper.toEventShortDto(
-                        e,
-                        initiatorsMap.getOrDefault(e.getInitiatorId(),
-                                new UserShortDto(e.getInitiatorId(), null)),
-                        confirmedMap.getOrDefault(e.getId(), 0L),
-                        viewsMap.getOrDefault(e.getId(), 0L)))
+                .map(e -> {
+                    EventShortDto dto = EventMapper.toEventShortDto(
+                            e,
+                            initiatorsMap.getOrDefault(e.getInitiatorId(), new UserShortDto(e.getInitiatorId(), null)),
+                            confirmedMap.getOrDefault(e.getId(), 0L),
+                            0L // views
+                    );
+                    dto.setRating(ratingsMap.getOrDefault(e.getId(), 0.0));
+                    return dto;
+                })
                 .toList();
     }
 
@@ -258,16 +264,24 @@ public class EventServiceImpl implements EventService {
 
     @Override
     @Transactional(readOnly = true)
-    public EventFullDto getPublishedEventById(Long id, HttpServletRequest request) {
+    public EventFullDto getPublishedEventById(Long id, HttpServletRequest request, Long userId) {
         Event event = findEventByIdAndState(id, EventState.PUBLISHED);
 
-        sendHit(request);
+        // Отправляем просмотр в Collector
+        if (userId != null) {
+            collectorClient.sendView(userId, id);
+        }
 
-        Long views = getViewsMap(Collections.singletonList(event)).getOrDefault(event.getId(), 0L);
+        Long views = 0L; // Заглушка, так как views больше нет
         UserShortDto initiator = buildInitiator(event.getInitiatorId());
         Long confirmed = requestClient.getConfirmedCount(id);
 
-        return EventMapper.toEventFullDto(event, initiator, confirmed, views);
+        EventFullDto dto = EventMapper.toEventFullDto(event, initiator, confirmed, views);
+        // Подтягиваем рейтинг из Analyzer
+        double rating = analyzerClient.getRating(id);
+        dto.setRating(rating);
+
+        return dto;
     }
 
     @Override
@@ -299,15 +313,16 @@ public class EventServiceImpl implements EventService {
                 .map(event -> "/events/" + event.getId())
                 .toList();
 
-        List<ViewStats> stats = statClient.getViewStats(new StatsRequest(
-                start.format(formatter),
-                LocalDateTime.now().plusYears(1).format(formatter),
-                uris, true));
-
-        return stats.stream()
-                .collect(Collectors.toMap(
-                        vs -> Long.parseLong(vs.getUri().substring("/events/".length())),
-                        ViewStats::getHits));
+//        List<ViewStats> stats = statClient.getViewStats(new StatsRequest(
+//                start.format(formatter),
+//                LocalDateTime.now().plusYears(1).format(formatter),
+//                uris, true));
+//
+//        return stats.stream()
+//                .collect(Collectors.toMap(
+//                        vs -> Long.parseLong(vs.getUri().substring("/events/".length())),
+//                        ViewStats::getHits));
+        return Map.of();
     }
 
     @Override
@@ -417,16 +432,16 @@ public class EventServiceImpl implements EventService {
                 : PageRequest.of(from / size, size);
     }
 
-    private void sendHit(HttpServletRequest request) {
-        EndpointHit endpointHit = EndpointHit.builder()
-                .app(APP_NAME)
-                .uri(request.getRequestURI())
-                .ip(request.getRemoteAddr())
-                .timestamp(LocalDateTime.now().format(formatter))
-                .build();
-        statClient.hit(endpointHit);
-        log.info("На сервер статистики отправлен endpointHit: {}", endpointHit);
-    }
+//    private void sendHit(HttpServletRequest request) {
+//        EndpointHit endpointHit = EndpointHit.builder()
+//                .app(APP_NAME)
+//                .uri(request.getRequestURI())
+//                .ip(request.getRemoteAddr())
+//                .timestamp(LocalDateTime.now().format(formatter))
+//                .build();
+//        statClient.hit(endpointHit);
+//        log.info("На сервер статистики отправлен endpointHit: {}", endpointHit);
+//    }
 
     private Event getEvent(Long eventId) {
         return eventRepository.findWithRelationsById(eventId).orElseThrow(
@@ -523,5 +538,40 @@ public class EventServiceImpl implements EventService {
             }
             default -> throw new ConflictException("Invalid state action: " + stateAction);
         }
+    }
+
+    @Override
+    public List<EventShortDto> getRecommendations(Long userId, int maxResults) {
+        Map<Long, Double> recommendedMap = analyzerClient.getRecommendationsForUser(userId, maxResults);
+        if (recommendedMap.isEmpty()) {
+            return List.of();
+        }
+
+        List<Long> eventIds = new ArrayList<>(recommendedMap.keySet());
+        List<Event> events = eventRepository.findAllByIdInWithCategory(eventIds);
+        Map<Long, UserShortDto> initiatorsMap = getInitiatorsMap(events);
+        Map<Long, Long> confirmedMap = getConfirmedMap(events);
+
+        return events.stream()
+                .map(e -> {
+                    EventShortDto dto = EventMapper.toEventShortDto(
+                            e,
+                            initiatorsMap.getOrDefault(e.getInitiatorId(), new UserShortDto(e.getInitiatorId(), null)),
+                            confirmedMap.getOrDefault(e.getId(), 0L),
+                            0L
+                    );
+                    dto.setRating(recommendedMap.getOrDefault(e.getId(), 0.0));
+                    return dto;
+                })
+                .toList();
+    }
+
+    @Override
+    public void likeEvent(Long userId, Long eventId) {
+        Boolean isConfirmed = requestClient.isUserConfirmed(userId, eventId);
+        if (!Boolean.TRUE.equals(isConfirmed)) {
+            throw new ConflictException("You can only like events you have visited (confirmed requests only)");
+        }
+        collectorClient.sendLike(userId, eventId);
     }
 }

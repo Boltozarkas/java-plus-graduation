@@ -1,4 +1,41 @@
 services:
+  # ==================== KAFKA ====================
+  kafka:
+    image: confluentinc/confluent-local:7.4.3
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      CLUSTER_ID: 'K0EA9p0yEe6MkAAAAkKsEg'
+    networks:
+      - ewm-network
+
+  kafka-init-topics:
+    image: confluentinc/confluent-local:7.4.3
+    container_name: kafka-init-topics
+    depends_on:
+      - kafka
+    command: "bash -c \
+                'kafka-topics --create --topic stats.user-actions.v1 \
+                             --partitions 1 --replication-factor 1 --if-not-exists \
+                             --bootstrap-server kafka:29092 && \
+                kafka-topics --create --topic stats.events-similarity.v1 \
+                             --partitions 1 --replication-factor 1 --if-not-exists \
+                             --bootstrap-server kafka:29092'"
+    init: true
+    networks:
+      - ewm-network
+
   # ==================== БАЗЫ ДАННЫХ ====================
   users-db:
     image: postgres:16.1
@@ -76,17 +113,17 @@ services:
     networks:
       - ewm-network
 
-  stats-db:
+  analyzer-db:
     image: postgres:16.1
-    container_name: stats-db
+    container_name: analyzer-db
     ports:
-      - "6542:5432"
+      - "7547:5432"
     environment:
-      POSTGRES_DB: ewm-stats
-      POSTGRES_USER: stat
-      POSTGRES_PASSWORD: stat
+      POSTGRES_DB: ewm-analyzer
+      POSTGRES_USER: analyzer
+      POSTGRES_PASSWORD: analyzer
     volumes:
-      - stats-db-data:/var/lib/postgresql/data
+      - analyzer-db-data:/var/lib/postgresql/data
     healthcheck:
       test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
       interval: 5s
@@ -117,6 +154,8 @@ services:
       context: ./infra/config-server
       dockerfile: Dockerfile
     container_name: config-server
+    ports:
+      - "8888:8888"
     environment:
       - SERVER_PORT=8888
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
@@ -152,30 +191,7 @@ services:
     networks:
       - ewm-network
 
-  # ==================== МИКРОСЕРВИСЫ ====================
-  stats-server:
-    build:
-      context: ./stats/stats-server
-      dockerfile: Dockerfile
-    container_name: stats-server
-    restart: on-failure
-    ports:
-      - "9090:9090"
-    environment:
-      - SERVER_PORT=9090  # Фиксируем порт для тестов Postman
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
-      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://stats-db:5432/ewm-stats
-      - SPRING_DATASOURCE_USERNAME=stat
-      - SPRING_DATASOURCE_PASSWORD=stat
-    depends_on:
-      stats-db:
-        condition: service_healthy
-      config-server:
-        condition: service_healthy
-    networks:
-      - ewm-network
-
+  # ==================== БИЗНЕС-СЕРВИСЫ ====================
   user-service:
     build:
       context: ./core/user-service
@@ -260,12 +276,78 @@ services:
     networks:
       - ewm-network
 
+  # ==================== НОВЫЕ СЕРВИСЫ (Stats) ====================
+  collector:
+    profiles: [ "full" ]
+    build:
+      context: ./stats/collector
+      dockerfile: Dockerfile
+    container_name: collector
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+    depends_on:
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
+  aggregator:
+    profiles: [ "full" ]
+    build:
+      context: ./stats/aggregator
+      dockerfile: Dockerfile
+    container_name: aggregator
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+    depends_on:
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
+  analyzer:
+    profiles: [ "full" ]
+    build:
+      context: ./stats/analyzer
+      dockerfile: Dockerfile
+    container_name: analyzer
+    restart: on-failure
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://analyzer-db:5432/ewm-analyzer
+      - SPRING_DATASOURCE_USERNAME=analyzer
+      - SPRING_DATASOURCE_PASSWORD=analyzer
+    depends_on:
+      analyzer-db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    networks:
+      - ewm-network
+
 volumes:
   users-db-data:
   events-db-data:
   requests-db-data:
   comments-db-data:
-  stats-db-data:
+  analyzer-db-data:
 
 networks:
   ewm-network:

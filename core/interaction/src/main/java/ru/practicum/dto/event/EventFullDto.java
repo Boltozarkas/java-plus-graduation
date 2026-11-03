@@ -4,8 +4,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import ru.practicum.dto.user.UserShortDto;
 import ru.practicum.dto.category.CategoryDto;
+import ru.practicum.dto.user.UserShortDto;
 
 @Data
 @AllArgsConstructor
@@ -29,4 +29,5 @@ public class EventFullDto {
     private String state;
     private Long views;
     private Long confirmedRequests;
+    private double rating;
 }

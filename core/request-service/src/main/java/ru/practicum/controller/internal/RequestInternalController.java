@@ -40,4 +40,9 @@ public class RequestInternalController {
             @RequestBody EventRequestStatusUpdateRequest request) {
         return requestService.updateRequestsStatus(eventId, request);
     }
+
+    @GetMapping("/users/{userId}/events/{eventId}/confirmed")
+    public Boolean isConfirmed(@PathVariable Long userId, @PathVariable Long eventId) {
+        return requestService.isUserConfirmed(userId, eventId);
+    }
 }
